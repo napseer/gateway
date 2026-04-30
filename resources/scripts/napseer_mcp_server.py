@@ -2600,6 +2600,13 @@ def handle_gateway_relay_session(connect_request, listener_sock=None):
                         "status": "resize ignored",
                         "sent_at": iso_now(),
                     })
+                elif frame_type == "heartbeat":
+                    send_gateway_payload({
+                        "type": "heartbeat",
+                        "source": "gateway",
+                        "status": "ok",
+                        "sent_at": iso_now(),
+                    })
                 elif frame_type == "schedule.list":
                     gateway_log("relay_schedule_list_requested", project_id=project_id, session_id=session_id, request_id=request_id)
                     send_gateway_schedules()
