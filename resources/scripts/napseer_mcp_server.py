@@ -3801,15 +3801,15 @@ def save_auth(updates):
     current_public = load_public_auth_file()
     cleaned = {key: value for key, value in updates.items() if value is not None}
     if vault_exists():
-        public_updates = {key: value for key, value in cleaned.items() if key in AUTH_FILE_KEYS}
-        secret_updates = {key: value for key, value in cleaned.items() if key in GATEWAY_VAULT_KEYS}
+        public_updates = {key: value for key, value in cleaned.items() if key in PUBLIC_AUTH_KEYS}
+        secret_updates = {key: value for key, value in cleaned.items() if key in SECRET_AUTH_KEYS or key in GATEWAY_VAULT_KEYS}
         current_public.update(public_updates)
         write_public_auth(current_public)
         if secret_updates:
             require_unlocked("updating gateway vault")
             VAULT_SECRETS.update(secret_updates)
             write_vault_with_key(VAULT_KEY, {"version": 1, "updated_at": iso_now(), "secrets": VAULT_SECRETS})
-        AUTH = load_auth(public_override=current_public)
+        AUTH = load_auth(public_override=current_public, secret_override=VAULT_SECRETS)
     else:
         current_public.update(cleaned)
         AUTH_PATH.parent.mkdir(exist_ok=True)
@@ -4023,16 +4023,28 @@ def gateway_service_activate(args=None):
     }
 
 
+def gateway_service_unlock_from_env():
+    if not vault_exists() or gateway_is_unlocked():
+        return False
+    passphrase = os.environ.get("NAPSEER_GATEWAY_PASSPHRASE") or os.environ.get("NAPSEER_GATEWAY_PASSKEY")
+    if not passphrase:
+        return False
+    gateway_unlock(passphrase)
+    return True
+
+
 def gateway_service_run(args=None):
     args = args or {}
     if not AUTH.get("service_registration_id") and (
         os.environ.get("NAPSEER_SERVICE_BOOTSTRAP_TOKEN") or os.environ.get("NAPSEER_GATEWAY_BOOTSTRAP_TOKEN")
     ):
         gateway_service_preregister(args)
+    gateway_service_unlock_from_env()
     deadline = time.time() + int(args.get("timeout_seconds") or os.environ.get("NAPSEER_SERVICE_ACTIVATION_TIMEOUT_SECONDS", "900"))
     activated = False
     while not TOKEN and time.time() < deadline:
         try:
+            gateway_service_unlock_from_env()
             gateway_service_activate(args)
             activated = True
             break
@@ -4044,9 +4056,7 @@ def gateway_service_run(args=None):
     if not TOKEN and not activated:
         raise RuntimeError("gateway service was not accepted before activation timeout")
     if not gateway_is_unlocked():
-        passphrase = os.environ.get("NAPSEER_GATEWAY_PASSPHRASE") or os.environ.get("NAPSEER_GATEWAY_PASSKEY")
-        if passphrase:
-            gateway_unlock(passphrase)
+        gateway_service_unlock_from_env()
     result = start_local_ui({"open_browser": False, "port": int(args.get("port") or os.environ.get("NAPSEER_GATEWAY_PORT", "0"))})
     print(json.dumps(result, indent=2))
     try:
