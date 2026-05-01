@@ -37,4 +37,4 @@ ENV NAPSEER_SERVICE_ACTIVATION_TIMEOUT_SECONDS=900
 
 VOLUME ["/workspace/.napseer"]
 
-CMD ["nap", "gateway", "service", "run"]
+CMD ["sh", "-c", "nap gateway configure && python3 /opt/napseer/napseer_mcp_server.py gateway service run"]
