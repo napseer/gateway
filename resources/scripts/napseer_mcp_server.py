@@ -4038,7 +4038,18 @@ def gateway_service_run(args=None):
     if not AUTH.get("service_registration_id") and (
         os.environ.get("NAPSEER_SERVICE_BOOTSTRAP_TOKEN") or os.environ.get("NAPSEER_GATEWAY_BOOTSTRAP_TOKEN")
     ):
-        gateway_service_preregister(args)
+        try:
+            gateway_service_preregister(args)
+        except RuntimeError as exc:
+            if "service bootstrap token is invalid or expired" not in str(exc):
+                raise
+            result = {
+                "status": "bootstrap_token_invalid",
+                "message": "Gateway bootstrap token is invalid or expired. Create a new gateway bootstrap token and replace compose.yaml.",
+            }
+            gateway_log("service_bootstrap_token_invalid", level="error", error=str(exc))
+            print(json.dumps(result, indent=2))
+            return result
     gateway_service_unlock_from_env()
     deadline = time.time() + int(args.get("timeout_seconds") or os.environ.get("NAPSEER_SERVICE_ACTIVATION_TIMEOUT_SECONDS", "900"))
     activated = False
