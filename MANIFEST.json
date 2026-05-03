@@ -1,0 +1,13 @@
+{
+  "name": "gateway",
+  "source": "backend-split-import",
+  "contract_version": "2026-05-02",
+  "owned_surface": [
+    "gateway service runtime",
+    "gateway relay listener",
+    "terminal runtime",
+    "gateway vault",
+    "gateway Docker image"
+  ],
+  "migration_status": "initial source refresh from backend resources/scripts"
+}
