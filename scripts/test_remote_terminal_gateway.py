@@ -202,7 +202,7 @@ def test_rotation_required_session_skips_terminal_and_schedule_bootstrap(module)
     module.AUTH = {"agent_id": "agent-1", "worker_id": "worker-1"}
     module.current_project_id = lambda: "project-1"
     module.read_gateway_relay_secret = lambda: b"relay-secret"
-    module.relay_ws_url = lambda project_id, session_id, ticket: "ws://relay.test"
+    module.relay_ws_url = lambda project_id, session_id, ticket, socket="terminal": "ws://relay.test"
     module.ws_connect = lambda url: FakeSocket()
     module.ws_read_text = lambda sock: next(ws_frames)
     module.ws_send_text = lambda sock, text: sent.append(text)
@@ -216,7 +216,7 @@ def test_rotation_required_session_skips_terminal_and_schedule_bootstrap(module)
     module.relay_key_from_secret = lambda secret, context, direction: b"k" + direction.encode("utf-8")
     module.relay_context_hash = lambda context: "ctx"
     module.encrypt_relay_frame = (
-        lambda key, session_id, payload, context_hash, direction, seq: (
+        lambda key, session_id, payload, context_hash, relay_lane, direction, seq: (
             '{"type":"encrypted","payload":' + json.dumps(payload, separators=(",", ":")) + "}"
         )
     )
