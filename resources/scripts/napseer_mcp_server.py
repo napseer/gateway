@@ -359,8 +359,8 @@ PUBLIC_TOOLS = {
     "nap_gateway_unlock",
     "nap_gateway_lock",
     "nap_gateway_configure",
-    "nap_gateway_vault_setup_ls",
-    "nap_gateway_vault_setup_process",
+    "nap_gateway_vault_ls",
+    "nap_gateway_vault_process",
     "nap_gateway_vault_secret_rotate",
     "nap_gateway_restart",
     "nap_gateway_kill",
@@ -410,62 +410,6 @@ PUBLIC_TOOLS = {
     "nap_crontab_register_key",
     "nap_crontab_put",
 }
-OLD_TOOL_RENAMES = {
-    "napseer_auth_status": "nap_whoami",
-    "napseer_gateway_status": "nap_gateway_status",
-    "napseer_gateway_setup": "nap_gateway_setup",
-    "napseer_gateway_configure": "nap_gateway_configure",
-    "napseer_gateway_unlock": "nap_gateway_unlock",
-    "napseer_gateway_lock": "nap_gateway_lock",
-    "napseer_gateway_restart": "nap_gateway_restart",
-    "napseer_gateway_kill": "nap_gateway_kill",
-    "napseer_renew_auth": "nap_login",
-    "napseer_update_status": "nap_update_status",
-    "napseer_update_self": "nap_update_self",
-    "napseer_explore_tools": "nap_apropos",
-    "napseer_contract_profile": "nap_contract",
-    "napseer_acquire_lock": "nap_lock_acquire",
-    "napseer_renew_lock": "nap_lock_renew",
-    "napseer_release_lock": "nap_lock_release",
-    "napseer_list_locks": "nap_lock_ls",
-    "napseer_reindex_project": "nap_reindex_project",
-    "napseer_search_local": "nap_grep_local",
-    "napseer_index_status": "nap_index_status",
-    "napseer_clear_local_index": "nap_index_clear",
-    "napseer_search_memory": "nap_grep",
-    "napseer_get_memory_context": "nap_context",
-    "napseer_find_related_nodes": "nap_find_related",
-    "napseer_recent_memory": "nap_recent",
-    "napseer_list_folders": "nap_ls_folders",
-    "napseer_list_tags": "nap_ls_tags",
-    "napseer_move_node": "nap_mv",
-    "napseer_move_folder": "nap_mv_folder",
-    "napseer_bulk_upsert_nodes": "nap_bulk",
-    "napseer_create_project": "nap_project_create",
-    "napseer_create_node": "nap_create_node",
-    "napseer_upsert_node": "nap_tee",
-    "napseer_update_node_by_path": "nap_patch",
-    "napseer_archive_node_by_path": "nap_rm",
-    "napseer_get_node_by_path": "nap_cat",
-    "napseer_link_nodes": "nap_ln",
-    "napseer_get_backlinks": "nap_backlinks",
-    "napseer_list_nodes": "nap_ls",
-    "napseer_list_agent_nodes": "nap_agent_ls",
-    "napseer_get_agent_node": "nap_agent_cat",
-    "napseer_upsert_agent_node": "nap_agent_tee",
-    "napseer_update_agent_node": "nap_agent_patch",
-    "napseer_archive_agent_node": "nap_agent_rm",
-    "napseer_link_agent_node": "nap_agent_ln",
-    "napseer_submit_feedback": "nap_feedback_submit",
-    "napseer_list_feedback": "nap_feedback_ls",
-    "napseer_admin_list_feedback": "nap_feedback_admin_ls",
-    "napseer_update_feedback_status": "nap_feedback_resolve",
-    "napseer_claim_account": "nap_claim_account",
-    "napseer_register_project_signing_key": "nap_crontab_register_key",
-    "napseer_create_signed_schedule": "nap_crontab_put",
-    "napseer_open_ui": "nap_ui_open",
-}
-NEW_TOOL_REPLACES = {new: old for old, new in OLD_TOOL_RENAMES.items()}
 VAULT_SCHEMA = "napseer.vault.v1"
 GATEWAY_RELAY_SECRET_SCHEMA = "napseer.gateway-relay-secret.v1"
 GATEWAY_RELAY_STATE_SCHEMA = "napseer.gateway-relay-state.v1"
@@ -3663,6 +3607,27 @@ def gateway_vault_setup_requests(args=None):
     return request_json("GET", f"/v1/projects/{project_id}/vault/setup-requests")
 
 
+def gateway_vault_status(args=None):
+    args = args or {}
+    project_id = args.get("project_id") or current_project_id()
+    requests = gateway_vault_setup_requests({"project_id": project_id})
+    items = requests.get("items", [])
+    pending = [item for item in items if item.get("status") == "pending"]
+    return {
+        "status": "ok",
+        "project_id": project_id,
+        "locked": not gateway_is_unlocked(),
+        "vault_configured": vault_exists(),
+        "pending_setup_requests": len(pending),
+        "items": items,
+        "message": (
+            "No pending gateway vault setup requests."
+            if not pending
+            else f"{len(pending)} pending gateway vault setup request(s). Run `nap gateway vault process` to complete them."
+        ),
+    }
+
+
 def gateway_complete_vault_setup_request(setup_request, project_id=None):
     require_unlocked("completing project vault setup")
     project_id = str(project_id or setup_request.get("project_id") or current_project_id())
@@ -3678,7 +3643,7 @@ def gateway_complete_vault_setup_request(setup_request, project_id=None):
         "complete gateway-owned project vault setup",
         scope_type="encryption",
     )
-    if secret_kind == MEMORY_SECRET_KIND:
+    if any(item.get("secret_kind") == MEMORY_SECRET_KIND for item in payload.get("project_secrets", [])):
         ACTIVE_MEMORY_SECRET_VERSIONS.pop(project_id, None)
         for slot in list(MEMORY_SECRET_CACHE):
             if len(slot) >= 2 and slot[0] == project_id and slot[1] == MEMORY_SECRET_KIND:
@@ -3736,10 +3701,13 @@ def gateway_rotate_project_vault_secret(args=None):
     if current.get("secret_kind") != secret_kind:
         raise RuntimeError("active project secret is unavailable")
     account_id = current_account_id()
-    current_bundle = unwrap_project_key_bundle(current.get("wrapped_key_bundle"))
+    current_wrapped_bundle = current.get("wrapped_key_bundle")
+    current_bundle = unwrap_project_key_bundle(current_wrapped_bundle)
     wrapping_epoch = int(current.get("wrapping_epoch") or 0)
-    bundle_version = int(current.get("bundle_version") or 0) + 1
-    data_key_epoch = int(current.get("data_key_epoch") or 0) + 1
+    previous_bundle_version = int(current.get("bundle_version") or 0)
+    previous_data_key_epoch = int(current.get("data_key_epoch") or 0)
+    bundle_version = previous_bundle_version + 1
+    data_key_epoch = previous_data_key_epoch + 1
     if wrapping_epoch <= 0 or bundle_version <= 1 or data_key_epoch <= 1:
         raise RuntimeError("active project secret is unavailable")
     plaintext_bundle = generate_project_data_key_bundle(
@@ -3753,6 +3721,11 @@ def gateway_rotate_project_vault_secret(args=None):
         "POST",
         f"/v1/projects/{project_id}/vault/secrets/{urllib.parse.quote(secret_kind, safe='')}/rotate",
         {
+            "previous_wrapping_epoch": wrapping_epoch,
+            "previous_bundle_version": previous_bundle_version,
+            "previous_data_key_epoch": previous_data_key_epoch,
+            "previous_aad_hash": current_wrapped_bundle.get("aad_hash"),
+            "previous_ciphertext_sha256": current_wrapped_bundle.get("ciphertext_sha256"),
             "wrapped_key_bundle": wrapped_project_key_bundle_record(
                 project_id,
                 account_id,
@@ -3800,7 +3773,7 @@ def start_gateway_vault_setup_thread():
     if GATEWAY_VAULT_SETUP_THREAD_STARTED:
         return
     GATEWAY_VAULT_SETUP_THREAD_STARTED = True
-    threading.Thread(target=gateway_vault_setup_loop, name="napseer-gateway-vault-setup", daemon=True).start()
+    threading.Thread(target=gateway_vault_setup_loop, name="napseer-gateway-vault", daemon=True).start()
 
 
 def handle_gateway_relay_session(connect_request, listener_sock=None):
@@ -6551,7 +6524,7 @@ def cli_project_create(args):
     positionals = cli_positionals(args)
     slug = cli_option(args, "--slug", default=positionals[0] if positionals else default_project_slug())
     name = cli_option(args, "--name", default=default_project_name(slug))
-    encryption = cli_option(args, "--encryption", default="encrypted" if cli_flag(args, "--encrypted") else "plaintext")
+    encryption = cli_option(args, "--encryption", default="plaintext")
     payload = {
         "slug": slug,
         "name": name,
@@ -8175,9 +8148,9 @@ def start_local_ui(args):
                 return gateway_setup(payload)
             if route == "/local-api/gateway/configure":
                 return gateway_tmux_configure(payload)
-            if route == "/local-api/gateway/vault-setup/list":
+            if route == "/local-api/gateway/vault/list":
                 return gateway_vault_setup_requests(payload)
-            if route == "/local-api/gateway/vault-setup/process":
+            if route == "/local-api/gateway/vault/process":
                 return gateway_process_vault_setup_requests(payload)
             if route == "/local-api/gateway/vault-secret/rotate":
                 return gateway_rotate_project_vault_secret(payload)
@@ -8551,7 +8524,7 @@ def raw_tools():
             },
         },
         {
-            "name": "nap_gateway_vault_setup_ls",
+            "name": "nap_gateway_vault_ls",
             "description": "List project vault setup requests assigned to this gateway worker. Does not reveal secret material.",
             "inputSchema": {
                 "type": "object",
@@ -8560,7 +8533,7 @@ def raw_tools():
             },
         },
         {
-            "name": "nap_gateway_vault_setup_process",
+            "name": "nap_gateway_vault_process",
             "description": "Complete pending project vault setup requests assigned to this unlocked gateway by uploading opaque client-wrapped key bundle records for backend-owned HashiCorp storage.",
             "inputSchema": {
                 "type": "object",
@@ -9313,8 +9286,8 @@ TOOL_CATEGORIES = {
         "nap_gateway_status",
         "nap_gateway_setup",
         "nap_gateway_configure",
-        "nap_gateway_vault_setup_ls",
-        "nap_gateway_vault_setup_process",
+        "nap_gateway_vault_ls",
+        "nap_gateway_vault_process",
         "nap_gateway_vault_secret_rotate",
         "nap_gateway_unlock",
         "nap_gateway_restart",
@@ -9378,7 +9351,7 @@ LOCAL_FILE_TOOLS = {
     "nap_index_clear",
     "nap_gateway_setup",
     "nap_gateway_configure",
-    "nap_gateway_vault_setup_process",
+    "nap_gateway_vault_process",
     "nap_gateway_vault_secret_rotate",
     "nap_gateway_unlock",
     "nap_gateway_lock",
@@ -9442,7 +9415,7 @@ def tool_contract_metadata(name):
         "idempotency": "safe" if side_effect == "none" else "not-idempotent",
         "dangerous": side_effect in {"process-control", "terminal-control"} or name in SECRET_ACCEPTING_TOOLS,
         "dry_run_supported": dry_run_supported,
-        "replaces": NEW_TOOL_REPLACES.get(name),
+        "replaces": None,
         "requires_local": tool_auth_mode(name) != "public",
     }
 
@@ -9561,14 +9534,6 @@ def explore_tools(args):
 
 def man_tool(args):
     name = str(args.get("tool") or args.get("name") or "").strip()
-    if name in OLD_TOOL_RENAMES:
-        replacement = OLD_TOOL_RENAMES[name]
-        return {
-            "ok": False,
-            "tool": name,
-            "renamed_to": replacement,
-            "message": f"{name} was renamed to {replacement}; call {replacement} instead",
-        }
     for tool in tools():
         if tool["name"] == name:
             return tool_card(tool, include_schema=True)
@@ -9626,8 +9591,6 @@ def doctor(args):
 
 def call_tool_impl(name, args):
     args = args or {}
-    if name in OLD_TOOL_RENAMES:
-        raise RuntimeError(f"{name} was renamed to {OLD_TOOL_RENAMES[name]}; call {OLD_TOOL_RENAMES[name]} instead")
     if name not in PUBLIC_TOOLS and name in PROTECTED_TOOLS:
         require_unlocked(name)
     if name == "nap_whoami":
@@ -9638,9 +9601,9 @@ def call_tool_impl(name, args):
         return gateway_setup(args)
     if name == "nap_gateway_configure":
         return mcp_gateway_configure(args)
-    if name == "nap_gateway_vault_setup_ls":
+    if name == "nap_gateway_vault_ls":
         return gateway_vault_setup_requests(args)
-    if name == "nap_gateway_vault_setup_process":
+    if name == "nap_gateway_vault_process":
         return gateway_process_vault_setup_requests(args)
     if name == "nap_gateway_vault_secret_rotate":
         return gateway_rotate_project_vault_secret(args)
@@ -9924,10 +9887,7 @@ def cli_main(argv):
         if subcommand in {"plaintext", "plain", "unencrypt", "decrypt", "disable-encryption"}:
             print(json.dumps(project_encryption_transition({"state": "plaintext"}), indent=2))
             return
-        if subcommand in {"encrypted", "encrypt", "enable-encryption"}:
-            print(json.dumps(project_encryption_transition({"state": "encrypted"}), indent=2))
-            return
-        print("Usage: napseer_mcp_server.py project [create [slug] [--name NAME] [--description TEXT] [--encrypted|--encryption plaintext|encrypted] [--passphrase TEXT]|claim [--no-browser] [--timeout SECONDS] [--return-url URL]|status|encryption [status|set plaintext|set encrypted|plaintext|encrypted]|plaintext|encrypted]")
+        print("Usage: napseer_mcp_server.py project [create [slug] [--name NAME] [--description TEXT] [--encryption plaintext] [--passphrase TEXT]|claim [--no-browser] [--timeout SECONDS] [--return-url URL]|status|encryption [status|set plaintext|plaintext]|plaintext]")
         return
     if command == "gateway":
         subcommand = argv[2] if len(argv) > 2 else "status"
@@ -10060,16 +10020,19 @@ def cli_main(argv):
                 gateway_service_run(payload)
                 return
             raise RuntimeError("unknown gateway service action; use preregister|activate|run")
-        if subcommand in {"vault-setup", "vault_setup", "project-vault"}:
-            action = args[0] if args else "process"
+        if subcommand == "vault":
+            action = args[0] if args else "status"
             vault_args = args[1:] if args else []
+            if action in {"help", "-h", "--help"}:
+                print("Usage: napseer_mcp_server.py gateway vault [status|list|process|rotate-secret] [--kind chat|tabs|gateway|memory] [--all] [--project-id ID]")
+                return
             payload = {
                 "project_id": cli_option(vault_args, "--project-id", default=None),
                 "secret_kind": cli_option(vault_args, "--secret-kind", "--kind", default=None),
                 "complete_all": cli_flag(vault_args, "--all", "--complete-all"),
             }
             if action in {"list", "ls", "status"}:
-                print(json.dumps(gateway_vault_setup_requests(payload), indent=2))
+                print(json.dumps(gateway_vault_status(payload), indent=2))
                 return
             if action in {"process", "complete", "run"}:
                 print(json.dumps(gateway_process_vault_setup_requests(payload), indent=2))
@@ -10079,7 +10042,7 @@ def cli_main(argv):
                     payload["secret_kind"] = vault_args[0] if vault_args and not vault_args[0].startswith("-") else "chat"
                 print(json.dumps(gateway_rotate_project_vault_secret(payload), indent=2))
                 return
-            raise RuntimeError("unknown gateway vault-setup action; use list|process")
+            raise RuntimeError("unknown gateway vault action; use status|list|process|rotate-secret")
         if subcommand == "setup":
             print(json.dumps(gateway_setup({
                 "passphrase": cli_option(args, "--passphrase", default=None),
@@ -10097,7 +10060,7 @@ def cli_main(argv):
         if subcommand == "lock":
             print(json.dumps(gateway_lock(), indent=2))
             return
-        print("Usage: napseer_mcp_server.py gateway [status|configure [--command CMD] [--target session:window.pane]|vault-setup [list|process] [--all]|terminal [list|create|close|capture|input]|schedule [list|create|update|delete|run]|restart [--passphrase TEXT]|kill [--passphrase TEXT]|setup|rotate-passphrase --new-passphrase TEXT|unlock|lock]")
+        print("Usage: napseer_mcp_server.py gateway [status|configure [--command CMD] [--target session:window.pane]|vault [status|list|process|rotate-secret] [--kind chat|tabs|gateway|memory] [--all]|terminal [list|create|close|capture|input]|schedule [list|create|update|delete|run]|restart [--passphrase TEXT]|kill [--passphrase TEXT]|setup|rotate-passphrase --new-passphrase TEXT|unlock|lock]")
         return
     if command == "feedback":
         subcommand = argv[2] if len(argv) > 2 else "list"

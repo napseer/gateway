@@ -67,13 +67,41 @@ def run():
         assert set(item) == {"secret_kind", "wrapped_key_bundle"}
         assert_wrapped_record(mod, item["wrapped_key_bundle"], item["secret_kind"])
 
+    mod.DEFAULT_PROJECT_ID = PROJECT_ID
+    mod.require_unlocked = lambda operation="operation": None
+    mod.ACTIVE_MEMORY_SECRET_VERSIONS[PROJECT_ID] = 1
+    mod.MEMORY_SECRET_CACHE[(PROJECT_ID, "memory", 1, 1, 1, 1)] = bytes(range(32))
+    completion_calls = []
+    mod.request_project_write = lambda method, path, body, project_id, purpose, scope_type="project": completion_calls.append(
+        (method, path, body, project_id, purpose, scope_type)
+    ) or {
+        "setup_request": {"id": "setup-1", "status": "completed"},
+        "project_secrets": [],
+    }
+    completed = mod.gateway_complete_vault_setup_request({"id": "setup-1", "project_id": PROJECT_ID})
+    assert completed["setup_request"]["status"] == "completed"
+    assert completion_calls[0][0] == "POST"
+    assert completion_calls[0][1] == f"/v1/projects/{PROJECT_ID}/vault/setup-requests/setup-1/complete"
+    assert completion_calls[0][5] == "encryption"
+    assert set(completion_calls[0][2]) == {"project_secrets"}
+    assert PROJECT_ID not in mod.ACTIVE_MEMORY_SECRET_VERSIONS
+    assert not mod.MEMORY_SECRET_CACHE
+
     assert "project_vaults" not in mod.VAULT_SECRETS
     assert "vault_master_secret_b64" not in str(mod.VAULT_SECRETS)
     assert "secret_b64" not in str(mod.VAULT_SECRETS)
 
     tools = {tool["name"]: tool for tool in mod.raw_tools()}
-    assert "transient secret_b64" not in tools["nap_gateway_vault_setup_process"]["description"]
-    assert "opaque client-wrapped key bundle records" in tools["nap_gateway_vault_setup_process"]["description"]
+    assert "nap_gateway_vault_ls" in tools
+    assert "nap_gateway_vault_process" in tools
+    assert "nap_gateway_vault_" + "setup_ls" not in tools
+    assert "nap_gateway_vault_" + "setup_process" not in tools
+    assert not [name for name in tools if name.startswith("napseer_")]
+    assert not [
+        tool for tool in mod.tools() if tool.get("napseer", {}).get("replaces")
+    ]
+    assert "transient secret_b64" not in tools["nap_gateway_vault_process"]["description"]
+    assert "opaque client-wrapped key bundle records" in tools["nap_gateway_vault_process"]["description"]
     assert "transient secret_b64" not in tools["nap_gateway_vault_secret_rotate"]["description"]
     assert "opaque client-wrapped key bundle record" in tools["nap_gateway_vault_secret_rotate"]["description"]
 
@@ -165,7 +193,19 @@ def run():
     assert calls[0][0] == "POST"
     assert calls[0][1] == f"/v1/projects/{PROJECT_ID}/vault/secrets/chat/rotate"
     assert calls[0][5] == "encryption"
-    assert set(calls[0][2]) == {"wrapped_key_bundle"}
+    assert set(calls[0][2]) == {
+        "previous_wrapping_epoch",
+        "previous_bundle_version",
+        "previous_data_key_epoch",
+        "previous_aad_hash",
+        "previous_ciphertext_sha256",
+        "wrapped_key_bundle",
+    }
+    assert calls[0][2]["previous_wrapping_epoch"] == 1
+    assert calls[0][2]["previous_bundle_version"] == 1
+    assert calls[0][2]["previous_data_key_epoch"] == 1
+    assert calls[0][2]["previous_aad_hash"] == active_bundle["aad_hash"]
+    assert calls[0][2]["previous_ciphertext_sha256"] == active_bundle["ciphertext_sha256"]
     assert_wrapped_record(mod, calls[0][2]["wrapped_key_bundle"], "chat", data_key_epoch=2)
     assert "secret_b64" not in str(calls[0][2])
     assert mod.VAULT_SECRETS == local_before
