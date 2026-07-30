@@ -1,35 +1,27 @@
-FROM registry.fedoraproject.org/fedora:42
+FROM registry.fedoraproject.org/fedora:42@sha256:63773f454664cd77e239f8e0b13ae7f18effe9e3d6612a325b5646eb3bda11f1
 
 WORKDIR /workspace
 
-RUN dnf -y install ca-certificates curl git openssh-clients python3 tmux util-linux \
+ARG GATEWAY_SOURCE_REVISION=unresolved
+LABEL org.opencontainers.image.source="https://github.com/napseer/gateway" \
+      org.opencontainers.image.revision="${GATEWAY_SOURCE_REVISION}"
+
+RUN dnf -y install ca-certificates git openssh-clients python3 tmux util-linux \
     && dnf clean all
 
-RUN python3 - <<'PY'
-import json
-import os
-import pathlib
-import subprocess
-import sys
-import urllib.request
+COPY resources/scripts/napseer_mcp_server.py /opt/napseer/napseer_mcp_server.py
+COPY resources/scripts/napseer_spake2.py /opt/napseer/napseer_spake2.py
+COPY resources/scripts/terminal/ /opt/napseer/terminal/
 
-base_url = "https://api.napseer.com"
-request = urllib.request.Request(
-    f"{base_url}/v1/scripts/nap_install.py",
-    headers={"User-Agent": "napseer-gateway-docker/0.1"},
-)
-payload = json.loads(urllib.request.urlopen(request, timeout=30).read().decode("utf-8"))
-installer = pathlib.Path("/tmp/nap_install.py")
-installer.write_text(payload["content"], encoding="utf-8")
-subprocess.check_call(
-    [sys.executable, str(installer), "install"],
-    env={**os.environ, "NAPSEER_HOME": "/opt/napseer", "NAPSEER_BIN_DIR": "/usr/local/bin", "NAPSEER_BASE_URL": base_url},
-)
-PY
+RUN python3 -m py_compile \
+        /opt/napseer/napseer_mcp_server.py \
+        /opt/napseer/napseer_spake2.py \
+        /opt/napseer/terminal/__init__.py \
+        /opt/napseer/terminal/protocol.py \
+        /opt/napseer/terminal/pty_manager.py \
+    && chmod 0755 /opt/napseer/napseer_mcp_server.py
 
 ENV PYTHONPATH=/opt/napseer
-ENV NAPSEER_HOME=/opt/napseer
-ENV NAPSEER_BIN_DIR=/usr/local/bin
 ENV NAPSEER_BASE_URL=https://api.napseer.com
 ENV NAPSEER_GATEWAY_PORT=0
 ENV NAPSEER_GATEWAY_PTY_TERMINAL=1
@@ -37,4 +29,4 @@ ENV NAPSEER_SERVICE_ACTIVATION_TIMEOUT_SECONDS=900
 
 VOLUME ["/workspace/.napseer"]
 
-CMD ["sh", "-c", "nap gateway configure && python3 /opt/napseer/napseer_mcp_server.py gateway service run"]
+CMD ["python3", "/opt/napseer/napseer_mcp_server.py", "gateway", "service", "run"]

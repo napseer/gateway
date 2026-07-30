@@ -1,6 +1,6 @@
 {
   "name": "gateway",
-  "source": "backend-split-import",
+  "source": "napseer-gateway",
   "contract_version": "2026-05-02",
   "owned_surface": [
     "gateway service runtime",
@@ -9,5 +9,11 @@
     "gateway vault",
     "gateway Docker image"
   ],
-  "migration_status": "initial source refresh from backend resources/scripts"
+  "build_policy": {
+    "runtime_source": "repository-owned",
+    "network_downloads_during_image_build": false,
+    "base_image_pinned_by_digest": true,
+    "source_revision_label": "org.opencontainers.image.revision"
+  },
+  "migration_status": "gateway image builds only repository-owned runtime source"
 }

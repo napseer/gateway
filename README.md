@@ -2,7 +2,7 @@
 
 Gateway runtime source for Napseer.
 
-This repository is intended to become the canonical source for:
+This repository is the canonical source for:
 
 - Gateway service runtime.
 - Local terminal/chat execution managers.
@@ -12,9 +12,11 @@ This repository is intended to become the canonical source for:
 
 Current state:
 
-- `resources/scripts/napseer_mcp_server.py` is still the pre-split runtime script copied from the backend.
+- `resources/scripts/napseer_mcp_server.py` contains the gateway service runtime
+  while compatibility decomposition continues.
 - `resources/scripts/terminal/` contains the terminal runtime helpers.
 - `scripts/` contains gateway-focused smoke and runtime tests.
-- `Dockerfile` installs the published `nap` command and runs gateway service mode.
+- `Dockerfile` copies repository-owned runtime files into a digest-pinned base
+  image. It performs no live Napseer API download during the build.
 
 The backend remains the protocol and compatibility source of truth through `/v1/gateway-protocol`.
